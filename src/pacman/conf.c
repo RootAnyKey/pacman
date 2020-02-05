@@ -110,6 +110,8 @@ config_t *config_new(void)
 		newconfig->localfilesiglevel = ALPM_SIG_USE_DEFAULT;
 		newconfig->remotefilesiglevel = ALPM_SIG_USE_DEFAULT;
 	}
+	/* By default use 5 parallel download streams */
+	newconfig->parallel_downloads = 5;
 
 	newconfig->colstr.colon   = ":: ";
 	newconfig->colstr.title   = "";
@@ -677,6 +679,9 @@ static int _parse_options(const char *key, char *value,
 				return 1;
 			}
 			FREELIST(values);
+		} else if(strcmp(key, "ParallelDownloads") == 0) {
+			/* TODO: what is the best way to handle int conversion errors? */
+			config->parallel_downloads = atoi(value);
 		} else {
 			pm_printf(ALPM_LOG_WARNING,
 					_("config file %s, line %d: directive '%s' in section '%s' not recognized.\n"),
@@ -845,6 +850,7 @@ static int setup_libalpm(void)
 	alpm_option_set_noextracts(handle, config->noextract);
 
 	alpm_option_set_disable_dl_timeout(handle, config->disable_dl_timeout);
+	alpm_option_set_parallel_downloads(handle, config->parallel_downloads);
 
 	for(i = config->assumeinstalled; i; i = i->next) {
 		char *entry = i->data;

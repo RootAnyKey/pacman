@@ -877,29 +877,23 @@ void cb_dl_progress(const char *filename, off_t file_xfered, off_t file_total) {
 		bar->xfered = file_xfered;
 	}
 
-	if(dl_completed && multibar_move_complete_top) {
-		int i;
-		alpm_list_t *redrawitem = active_dls;
-
-		assert(found);
-
-		cursor_goto_bar(0);
-		draw_dl_progress_bar(bar);
-
-		/* We just reshuffled progressbars, the completed bar moved to the top of
-		 * the stack. Now we need to redraw all the progressbars that were shifted
+	if(dl_completed && multibar_move_complete_top && index != 0) {
+		/* If this item completed then swap it with the 0-th bar so it will
+		 * become on top
 		 */
-		for(i = 0; i < index; i++, redrawitem = redrawitem->next) {
-			putchar('\n');
-			draw_dl_progress_bar(redrawitem->data);
-		}
+		/* swap 0-th bar data with `index`-th one */
+		struct dl_progress_bar *former_topbar = active_dls->data;
+		active_dls->data = bar;
+		baritem->data = former_topbar;
 
-		active_dls = alpm_list_remove_item(active_dls, redrawitem);
-		total_lines++;
-	} else {
 		cursor_goto_bar(index);
-		draw_dl_progress_bar(bar);
+		draw_dl_progress_bar(former_topbar);
+
+		index = 0;
 	}
+
+	cursor_goto_bar(index);
+	draw_dl_progress_bar(bar);
 	cursor_goto_end();
 	fflush(stdout);
 

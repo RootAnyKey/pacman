@@ -858,3 +858,15 @@ int SYMEXPORT alpm_option_set_disable_dl_timeout(alpm_handle_t *handle,
 #endif
 	return 0;
 }
+
+int SYMEXPORT alpm_option_set_parallel_downloads(alpm_handle_t *handle,
+		unsigned int streams_num)
+{
+	CHECK_HANDLE(handle, return -1);
+#ifdef HAVE_LIBCURL
+	handle->parallel_downloads = streams_num;
+#else
+	(void)streams_num; /* silence unused variable warnings */
+#endif
+	return 0;
+}

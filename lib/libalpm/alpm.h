@@ -902,6 +902,7 @@ int alpm_option_get_remote_file_siglevel(alpm_handle_t *handle);
 int alpm_option_set_remote_file_siglevel(alpm_handle_t *handle, int level);
 
 int alpm_option_set_disable_dl_timeout(alpm_handle_t *handle, unsigned short disable_dl_timeout);
+int alpm_option_set_parallel_downloads(alpm_handle_t *handle, unsigned int streams_num);
 
 /** @} */
 
