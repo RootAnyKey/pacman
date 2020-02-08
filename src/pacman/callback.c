@@ -19,6 +19,7 @@
  */
 
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -640,6 +641,7 @@ struct dl_progress_bar {
 	uint64_t sync_time; /* Last time we updated the bar info */
 	double rate;
 	unsigned int eta; /* ETA in seconds */
+	bool completed; /* transfer is completed */
 };
 
 static void draw_dl_progress_bar(struct dl_progress_bar *bar)
@@ -755,11 +757,13 @@ static void draw_dl_progress_bar(struct dl_progress_bar *bar)
 	return;
 }
 
-static void cursor_line_up(int lines) {
+static void cursor_line_up(unsigned int lines) {
+	assert(lines > 0);
 	printf("\x1b[%dF", lines);
 }
 
-static void cursor_line_down(int lines) {
+static void cursor_line_down(unsigned int lines) {
+	assert(lines > 0);
 	printf("\x1b[%dE", lines);
 }
 
@@ -769,7 +773,7 @@ int multibar_move_complete_top = 0;
 /* Cursor position, corresponds to index in `active_dls` list */
 int cursor_lineno = 0;
 /* Total number of all bars that were printed. Equals to size of `active_dls` list */
-int total_lines = 0;
+size_t total_lines = 0;
 
 static void cursor_goto_bar(int num) {
 	if(num > cursor_lineno) {
@@ -785,115 +789,144 @@ static void cursor_goto_end(void) {
 	cursor_goto_bar(total_lines);
 }
 
-/* callback to handle display of download progress */
-void cb_dl_progress(const char *filename, off_t file_xfered, off_t file_total) {
+/* Returns true if element with the specified name is found, false otherwise */
+static bool find_bar_for_filename(const char *filename, int *index, struct dl_progress_bar **bar) {
+	int i = 0;
+	alpm_list_t *listitem = active_dls;
+	for(; listitem; listitem = listitem->next, i++) {
+		struct dl_progress_bar *b = listitem->data;
+		if (b->filename == filename /* or strcmp() ? */) {
+			*index = i;
+			*bar = b;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static int dload_progressbar_enabled(void)
+{
+	return !config->noprogressbar && getcols() != 0;
+}
+
+static void dload_init_event(const char *filename, alpm_download_event_init_t *data)
+{
+	(void)data;
+	printf(_(" %s downloading...\n"), filename);
+
+	if(!dload_progressbar_enabled()) {
+		return;
+	}
+
+	cursor_lineno++;
+	total_lines++;
+
+	struct dl_progress_bar *bar = calloc(1, sizeof(struct dl_progress_bar));
+	if (!bar)
+		return;
+	bar->filename = filename;
+	bar->init_time = get_time_ms(); /* TODO: maybe the init time should be calculated since the first chink received? */
+	bar->rate = 0.0;
+	active_dls = alpm_list_add(active_dls, bar);
+
+	assert(alpm_list_count(active_dls) == total_lines);
+}
+
+/* render download progress */
+static void dload_progress_event(const char *filename, alpm_download_event_progress_t *data)
+{
 	int index;
-	int found = 0;
-	struct dl_progress_bar *bar = NULL;
-	alpm_list_t *baritem = active_dls;
-	int dl_completed;
+	struct dl_progress_bar *bar;
+	int64_t curr_time = get_time_ms();
+	double last_chunk_rate;
+	int64_t timediff;
 
-	if(file_xfered < 0 || (file_total != -1 && file_xfered > file_total)) {
-		/* bogus values : stop here */
+	if (!dload_progressbar_enabled()) {
 		return;
 	}
 
-	/* Nothing has changed since last callback; stop here */
-	if(file_xfered == 0 && file_total == 0) {
+	assert(find_bar_for_filename(filename, &index, &bar));
+
+	/* compute current average values */
+	timediff = curr_time - bar->sync_time;
+
+	if(timediff < UPDATE_SPEED_MS) {
+		/* return if the calling interval was too short */
 		return;
 	}
+	bar->sync_time = curr_time;
 
-	if(config->noprogressbar || getcols() == 0) {
-		if(file_xfered == 0 && file_total == -1) {
-			printf(_("downloading %s...\n"), filename);
-			fflush(stdout);
-		}
-		return;
-	}
-
-	for(index = 0; baritem; baritem = baritem->next, index++) {
-		bar = baritem->data;
-		if (bar->filename == filename) {
-			found = 1;
-			break;
-		}
-	}
-
-	dl_completed = found && (file_xfered == file_total);
-	if(!found) {
-		/* We expect that ALPM will initialize the progress bar before
-		 * starting actual transfer
-		 */
-		assert(file_xfered == 0 && file_total == -1);
-
-		bar = calloc(1, sizeof(struct dl_progress_bar));
-		if (!bar)
-			return;
-		bar->filename = filename;
-		bar->init_time = get_time_ms(); /* TODO: maybe the init time should be calculated since the first chink received? */
-		bar->rate = 0.0;
-
-		active_dls = alpm_list_add(active_dls, bar);
-
-		cursor_goto_end();
-		putchar('\n'); /* Add a line for the new bar */
-		cursor_lineno++;
-		total_lines++;
+	last_chunk_rate = (double)(data->downloaded - bar->xfered) / (timediff / 1000.0);
+	/* average rate to reduce jumpiness */
+	bar->rate = (last_chunk_rate + 2 * bar->rate) / 3;
+	if(bar->rate > 0.0) {
+		bar->eta = (data->total - data->downloaded) / bar->rate;
 	} else {
-		if(dl_completed) {
-			/* compute final values */
-			int64_t timediff = get_time_ms() - bar->init_time;
-			if(timediff > 0) {
-				bar->rate = (double)file_xfered / (timediff / 1000.0);
-				/* round elapsed time (in ms) to the nearest second */
-				bar->eta = (unsigned int)(timediff + 500) / 1000;
-			} else {
-				bar->eta = 0;
-			}
-		} else {
-			/* compute current average values */
-			int64_t curr_time = get_time_ms();
-			int64_t timediff = curr_time - bar->sync_time;
-			double last_chunk_rate;
-
-			if(timediff < UPDATE_SPEED_MS) {
-				/* return if the calling interval was too short */
-				return;
-			}
-			bar->sync_time = curr_time;
-
-			last_chunk_rate = (double)(file_xfered - bar->xfered) / (timediff / 1000.0);
-			/* average rate to reduce jumpiness */
-			bar->rate = (last_chunk_rate + 2 * bar->rate) / 3;
-			if(bar->rate > 0.0) {
-				bar->eta = (file_total - file_xfered) / bar->rate;
-			} else {
-				bar->eta = UINT_MAX;
-			}
-		}
-
-		/* Total size is received after the download starts. */
-		bar->total_size = file_total;
-		bar->xfered = file_xfered;
+		bar->eta = UINT_MAX;
 	}
 
-	if(dl_completed && multibar_move_complete_top && index != 0) {
-		/* If this item completed then swap it with the 0-th bar so it will
-		 * become on top
-		 */
-		/* swap 0-th bar data with `index`-th one */
-		struct dl_progress_bar *former_topbar = active_dls->data;
-		active_dls->data = bar;
-		baritem->data = former_topbar;
-
-		cursor_goto_bar(index);
-		draw_dl_progress_bar(former_topbar);
-
-		index = 0;
-	}
+	/* Total size is received after the download starts. */
+	bar->total_size = data->total;
+	bar->xfered = data->downloaded;
 
 	cursor_goto_bar(index);
 	draw_dl_progress_bar(bar);
+	fflush(stdout);
+}
+
+/* download completed */
+static void dload_complete_event(const char *filename, alpm_download_event_completed_t *data)
+{
+	int index;
+	struct dl_progress_bar *bar;
+	int64_t timediff;
+
+	if (!dload_progressbar_enabled()) {
+		return;
+	}
+
+	assert(find_bar_for_filename(filename, &index, &bar));
+	bar->completed = true;
+
+	if(data->result == 1) {
+		cursor_goto_bar(index);
+		printf(_(" %s is up to date"), bar->filename);
+		/* The line contains text from previous status. Erase these leftovers. */
+		printf("\e[K");
+	} else if(data->result == 0) {
+		/* compute final values */
+		bar->xfered = bar->total_size;
+		timediff = get_time_ms() - bar->init_time;
+		if(timediff > 0) {
+			bar->rate = (double)bar->xfered / (timediff / 1000.0);
+			/* round elapsed time (in ms) to the nearest second */
+			bar->eta = (unsigned int)(timediff + 500) / 1000;
+		} else {
+			bar->eta = 0;
+		}
+
+		if(multibar_move_complete_top && index != 0) {
+			/* If this item completed then move it to the top
+
+			 * swap 0-th bar data with `index`-th one */
+			struct dl_progress_bar *former_topbar = active_dls->data;
+			alpm_list_t *baritem = alpm_list_nth(active_dls, index);
+			active_dls->data = bar;
+			baritem->data = former_topbar;
+
+			cursor_goto_bar(index);
+			draw_dl_progress_bar(former_topbar);
+
+			index = 0;
+		}
+
+		cursor_goto_bar(index);
+		draw_dl_progress_bar(bar);
+	} else {
+		cursor_goto_bar(index);
+		printf(_(" %s failed to download"), bar->filename);
+	}
 	cursor_goto_end();
 	fflush(stdout);
 
@@ -902,7 +935,7 @@ void cb_dl_progress(const char *filename, off_t file_xfered, off_t file_total) {
 	 */
 	while(active_dls) {
 		struct dl_progress_bar *j = active_dls->data;
-		if(j->total_size && j->xfered == j->total_size) {
+		if(j->completed) {
 			active_dls = alpm_list_remove_item(active_dls, active_dls);
 			free(j);
 			cursor_lineno--;
@@ -910,6 +943,26 @@ void cb_dl_progress(const char *filename, off_t file_xfered, off_t file_total) {
 		} else {
 			break;
 		}
+	}
+
+	assert(alpm_list_count(active_dls) == total_lines);
+}
+
+void cb_download(const char *filename, alpm_download_event_type_t event, void *data)
+{
+	if(event == ALPM_DOWNLOAD_INIT) {
+		dload_init_event(filename, data);
+	} else if(event == ALPM_DOWNLOAD_PROGRESS) {
+		dload_progress_event(filename, data);
+	} else if(event == ALPM_DOWNLOAD_ERROR) {
+		alpm_download_event_error_t *error_data = data;
+		pm_printf(ALPM_LOG_ERROR, _("failed to update %s (%s)\n"),
+				filename, alpm_strerror(error_data->error));
+	} else if(event == ALPM_DOWNLOAD_COMPLETED) {
+		dload_complete_event(filename, data);
+	} else {
+		pm_printf(ALPM_LOG_ERROR, _("unknown callback event type %d for %s\n"),
+				event, filename);
 	}
 }
 

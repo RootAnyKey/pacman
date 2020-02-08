@@ -18,6 +18,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
@@ -88,6 +89,7 @@ static int dload_progress_cb(void *file, curl_off_t dltotal, curl_off_t dlnow,
 {
 	struct dload_payload *payload = (struct dload_payload *)file;
 	off_t current_size, total_size;
+	alpm_download_event_progress_t cb_data = {0};
 
 	/* avoid displaying progress bar for redirects with a body */
 	if(payload->respcode >= 300) {
@@ -97,6 +99,11 @@ static int dload_progress_cb(void *file, curl_off_t dltotal, curl_off_t dlnow,
 	/* SIGINT sent, abort by alerting curl */
 	if(dload_interrupted) {
 		return 1;
+	}
+
+	if(dlnow < 0 || dltotal <= 0 || dlnow > dltotal) {
+		/* bogus values : stop here */
+		return 0;
 	}
 
 	current_size = payload->initial_size + dlnow;
@@ -114,30 +121,15 @@ static int dload_progress_cb(void *file, curl_off_t dltotal, curl_off_t dlnow,
 
 	total_size = payload->initial_size + dltotal;
 
-	if(dltotal == 0 || payload->prevprogress == total_size) {
+	if(payload->prevprogress == total_size) {
 		return 0;
 	}
 
-	/* initialize the progress bar here to avoid displaying it when
-	 * a repo is up to date and nothing gets downloaded.
-	 * payload->handle->dlcb will receive the remote_name
-	 * and the following arguments:
-	 * 0, -1: download initialized
-	 * 0, 0: non-download event
-	 * x {x>0}, x: download complete
-	 * x {x>0, x<y}, y {y > 0}: download progress, expected total is known */
-	if(!payload->cb_initialized) {
-		payload->handle->dlcb(payload->remote_name, 0, -1);
-		payload->cb_initialized = 1;
-	}
-	if(payload->prevprogress == current_size) {
-		payload->handle->dlcb(payload->remote_name, 0, 0);
-	} else {
 	/* do NOT include initial_size since it wasn't part of the package's
 	 * download_size (nor included in the total download size callback) */
-		payload->handle->dlcb(payload->remote_name, dlnow, dltotal);
-	}
-
+	cb_data.total = dltotal;
+	cb_data.downloaded = dlnow;
+	payload->handle->dlcb(payload->remote_name, ALPM_DOWNLOAD_PROGRESS, &cb_data);
 	payload->prevprogress = current_size;
 
 	return 0;
@@ -644,26 +636,21 @@ static int curl_multi_handle_single_done(CURLM *curlm, CURLMsg *msg, const char 
 	CURL *curl = msg->easy_handle;
 	CURLcode curlerr;
 	char *effective_url;
-	int retcode = -1;
 	long timecond;
 	double remote_size, bytes_dl;
 	long remote_time = -1;
 	struct stat st;
 	char hostname[HOSTNAME_SIZE];
+	alpm_download_event_completed_t cb_data = {0};
+	int retcode;
 
 	curlerr = curl_easy_getinfo(curl, CURLINFO_PRIVATE, &payload);
-	ASSERT(curlerr == CURLE_OK, {
-		handle->pm_errno = ALPM_ERR_LIBCURL;
-		retcode = -1;
-		goto cleanup;
-
-	});
-
+	assert(curlerr == CURLE_OK);
 	handle = payload->handle;
 
 	curl_gethost(payload->fileurl, hostname, sizeof(hostname));
 	curlerr = msg->data.result;
-	_alpm_log(handle, ALPM_LOG_DEBUG, "curl returned error %d from transfer\n",
+	_alpm_log(handle, ALPM_LOG_DEBUG, "curl returned result %d from transfer\n",
 			curlerr);
 
 	/* was it a success? */
@@ -816,9 +803,11 @@ cleanup:
 	curl_multi_remove_handle(curlm, curl);
 	curl_easy_cleanup(curl);
 
+	cb_data.result = retcode;
+	handle->dlcb(payload->remote_name, ALPM_DOWNLOAD_COMPLETED, &cb_data);
+
 	FREE(payload->fileurl);
 
-	payload->retcode = retcode;
 	return 1;
 }
 
@@ -929,7 +918,11 @@ static int curl_multi_download_internal(alpm_handle_t *handle,
 		int msgs_left = -1;
 
 		for(; still_running < parallel_download_limit && payloads; still_running++) {
+			struct dload_payload *payload = payloads->data;
+			alpm_download_event_init_t cb_data = {};
+
 			curl_multi_add_payload(handle, curlm, payloads->data, localpath);
+			handle->dlcb(payload->remote_name, ALPM_DOWNLOAD_INIT, &cb_data);
 			payloads = payloads->next;
 		}
 
@@ -1142,5 +1135,4 @@ void _alpm_dload_payload_reset_for_retry(struct dload_payload *payload)
 	payload->initial_size += payload->prevprogress;
 	payload->prevprogress = 0;
 	payload->unlink_on_fail = 0;
-	payload->cb_initialized = 0;
 }

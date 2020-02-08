@@ -305,10 +305,10 @@ int SYMEXPORT alpm_db_update(int force, alpm_db_t *db)
  *
  * @param dbs a list of alpm_db_t to update.
  */
-int SYMEXPORT alpm_dbs_update(alpm_handle_t *handle, alpm_list_t *dbs, int force, UNUSED int failfast, alpm_cb_dbupdate cb) {
+int SYMEXPORT alpm_dbs_update(alpm_handle_t *handle, alpm_list_t *dbs, int force, UNUSED int failfast) {
 	char *syncpath;
 	const char *dbext = handle->dbext;
-	alpm_list_t *i, *j;
+	alpm_list_t *i;
 	int ret = -1;
 	mode_t oldmask;
 	alpm_list_t *payloads = NULL;
@@ -391,46 +391,30 @@ int SYMEXPORT alpm_dbs_update(alpm_handle_t *handle, alpm_list_t *dbs, int force
 	}
 
 	ret = _alpm_multi_download(handle, payloads, syncpath);
+	if(ret < 0) {
+		goto cleanup;
+	}
 
-	j = payloads;
 	for(i = dbs; i; i = i->next) {
-		struct dload_payload *p;
-		int siglevel;
-		int sigexists = 0;
-
 		alpm_db_t *db = i->data;
 		if(!(db->usage & ALPM_DB_USAGE_SYNC)) {
 			continue;
 		}
 
-		p = j->data;
-		j = j->next;
+		/* Cache needs to be rebuilt */
+		_alpm_db_free_pkgcache(db);
 
-		siglevel = alpm_db_get_siglevel(db);
-		sigexists = (siglevel & ALPM_SIG_DATABASE); /* calculate whether we download sig file as well */
-		if(sigexists) {
-			/* in case if database uses signatures we have another payload */
-			j = j->next;
+		/* clear all status flags regarding validity/existence */
+		db->status &= ~DB_STATUS_VALID;
+		db->status &= ~DB_STATUS_INVALID;
+		db->status &= ~DB_STATUS_EXISTS;
+		db->status &= ~DB_STATUS_MISSING;
+
+		/* if the download failed skip validation to preserve the download error */
+		if(sync_db_validate(db) != 0) {
+			/* pm_errno should be set */
+			ret = -1;
 		}
-
-		if(p->retcode == 0) {
-			/* Cache needs to be rebuilt */
-			_alpm_db_free_pkgcache(db);
-
-			/* clear all status flags regarding validity/existence */
-			db->status &= ~DB_STATUS_VALID;
-			db->status &= ~DB_STATUS_INVALID;
-			db->status &= ~DB_STATUS_EXISTS;
-			db->status &= ~DB_STATUS_MISSING;
-
-			/* if the download failed skip validation to preserve the download error */
-			if(p->retcode != -1 && sync_db_validate(db) != 0) {
-				/* pm_errno should be set */
-				ret = -1;
-			}
-		}
-
-		cb(db, p->retcode);
 	}
 
 cleanup:

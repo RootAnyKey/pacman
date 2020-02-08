@@ -709,13 +709,41 @@ typedef void (*alpm_cb_progress)(alpm_progress_t, const char *, int, size_t, siz
  * Downloading
  */
 
+/* Download events
+ * INIT and COMPLETED will be received by all files we attempted to download
+ * (TODO: we will not report INIT/COMPLETED events in case of failfast if the file
+ *  was later in the queue).
+ * Other events are optional.
+ */
+typedef enum {
+	ALPM_DOWNLOAD_INIT, /* alpm initializes file download logic */
+	ALPM_DOWNLOAD_PROGRESS, /* download progress reported */
+	ALPM_DOWNLOAD_ERROR, /* download error */
+	ALPM_DOWNLOAD_COMPLETED /* alpm is going to release data related to the file */
+} alpm_download_event_type_t;
+
+typedef struct {
+} alpm_download_event_init_t;
+
+typedef struct {
+	off_t downloaded; /* amount of data downloaded */
+	off_t total; /* total amount need to be downloaded */
+} alpm_download_event_progress_t;
+
+typedef struct {
+	alpm_errno_t error; /* erorr code */
+} alpm_download_event_error_t;
+
+typedef struct {
+	/* 0 - download completed succesfully, 1 - up-to-date, negative - error code */
+	int result;
+} alpm_download_event_completed_t;
+
 /** Type of download progress callbacks.
  * @param filename the name of the file being downloaded
- * @param xfered the number of transferred bytes
- * @param total the total number of bytes to transfer
  */
 typedef void (*alpm_cb_download)(const char *filename,
-		off_t xfered, off_t total);
+		alpm_download_event_type_t event, void *data);
 
 typedef void (*alpm_cb_totaldl)(off_t total);
 
@@ -1041,9 +1069,7 @@ int alpm_db_remove_server(alpm_db_t *db, const char *url);
  */
 int alpm_db_update(int force, alpm_db_t *db);
 
-/** Database update completion callback */
-typedef void (*alpm_cb_dbupdate)(alpm_db_t *db, int ret);
-int alpm_dbs_update(alpm_handle_t *handle, alpm_list_t *dbs, int force, int failfast, alpm_cb_dbupdate cb);
+int alpm_dbs_update(alpm_handle_t *handle, alpm_list_t *dbs, int force, int failfast);
 
 /** Get a package entry from a package database.
  * @param db pointer to the package database to get the package from

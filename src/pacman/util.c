@@ -148,22 +148,13 @@ int check_syncdbs(size_t need_repos, int check_valid)
 	return ret;
 }
 
-static void alpm_db_updatecb(alpm_db_t *db, int ret) {
-	if(ret < 0) {
-		pm_printf(ALPM_LOG_ERROR, _("failed to update %s (%s)\n"),
-				alpm_db_get_name(db), alpm_strerror(alpm_errno(config->handle)));
-	} else if(ret == 1) {
-		printf(_(" %s is up to date\n"), alpm_db_get_name(db));
-	}
-}
-
 int sync_syncdbs(int level, alpm_list_t *syncs)
 {
 	int ret;
 	int force = (level < 2 ? 0 : 1);
 
 	multibar_move_complete_top = 0;
-	ret = alpm_dbs_update(config->handle, syncs, force, 1, alpm_db_updatecb);
+	ret = alpm_dbs_update(config->handle, syncs, force, 1);
 	if(ret < 0) {
 		pm_printf(ALPM_LOG_ERROR, _("failed to synchronize all databases (%s)\n"),
 			alpm_strerror(alpm_errno(config->handle)));

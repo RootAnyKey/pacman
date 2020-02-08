@@ -33,8 +33,7 @@ struct dload_payload {
 	alpm_list_t *server;   /* iterator to servers to download the data from */
 	char *fileurl; /* server + path, it is used in non-multicurl solution. It need to be removed once we have mcurl ready */
 	char *filepath; /* filepath. server + filepath represents fileurl */
-	int retcode; /* curl return code */
-	long respcode;
+	long respcode; /* curl return code */
 	off_t initial_size;
 	off_t max_size;
 	off_t prevprogress;
@@ -43,7 +42,6 @@ struct dload_payload {
 	int errors_ok;
 	int unlink_on_fail;
 	int trust_remote_name;
-	int cb_initialized;
 #ifdef HAVE_LIBCURL
 	CURL *curl;
 	char error_buffer[CURL_ERROR_SIZE];
