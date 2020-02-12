@@ -642,7 +642,7 @@ static int curl_multi_handle_single_done(CURLM *curlm, CURLMsg *msg, const char 
 	struct stat st;
 	char hostname[HOSTNAME_SIZE];
 	alpm_download_event_completed_t cb_data = {0};
-	int retcode;
+	int retcode = -1;
 
 	curlerr = curl_easy_getinfo(curl, CURLINFO_PRIVATE, &payload);
 	assert(curlerr == CURLE_OK);
